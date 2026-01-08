@@ -1,0 +1,4 @@
+docker run -it --rm `
+  -v "C:\Users\Akash\OneDrive\Desktop\Projects\fit-bit_analysis:/scripts" `
+  amazon/aws-glue-libs:glue_libs_4.0.0_image_01 `
+  ls /scripts/daily_agg
