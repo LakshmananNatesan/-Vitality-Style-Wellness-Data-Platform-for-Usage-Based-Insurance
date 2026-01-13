@@ -193,16 +193,133 @@ daily_fact = daily_fact.withColumn(
 
 
 
+# detla steps vs yesterday 
+from pyspark.sql.window import Window
+from pyspark.sql.functions import lag
+
+window_prev_day = (
+    Window
+    .partitionBy("user_id")
+    .orderBy("activity_date")
+)
+daily_fact = daily_fact.withColumn(
+    "yesterday_steps",
+    lag("daily_steps", 1).over(window_prev_day)
+)
+
+daily_fact = daily_fact.withcolumn("difference",col("daily_steps")- col("yesterday_steps"))
+
+daily_fact = daily_fact.withColumn(
+    "steps_improved_vs_yesterday",
+    when(col("delta_steps_vs_yesterday") > 0, 1).otherwise(0)
+)
+daily_fact = daily_fact.withColumn(
+    "daily_active_minutes",
+    col("VeryActiveMinutes") + col("FairlyActiveMinutes")
+)
+
+
+from pyspark.sql.window import Window
+from pyspark.sql.functions import sum
+
+window_7d = (
+    Window
+    .partitionBy("user_id")
+    .orderBy("activity_date")
+    .rowsBetween(-6, 0)
+)
+
+daily_fact = daily_fact.withColumn(
+    "active_minutes_7d",
+    sum("daily_active_minutes").over(window_7d)
+)
+
+from pyspark.sql.functions import lag
+
+daily_fact = daily_fact.withColumn(
+    "active_minutes_7d_prev",
+    lag("active_minutes_7d", 7).over(
+        Window.partitionBy("user_id").orderBy("activity_date")
+    )
+)
+from pyspark.sql.functions import when
+
+daily_fact = daily_fact.withColumn(
+    "activity_trend_7d",
+    when(col("delta_active_minutes_7d") > 0, "IMPROVING")
+    .when(col("delta_active_minutes_7d") < 0, "DECLINING")
+    .otherwise("STABLE")
+)
+
+# activty_day_streak , # sedentary day streak , # activity_variance_7d
+
+daily_fact = daily_fact.withColumn(
+    "row_num",
+    row_number().over(w)
+)
+w = Window.partitionBy("user_id").orderBy("activity_date")
+
+row_number().over(
+    Window.partitionBy("user_id", "is_active_day").orderBy("activity_date")
+)
+daily_fact = daily_fact.withColumn(
+    "active_group",
+    col("row_num") -
+    row_number().over(
+        Window.partitionBy("user_id", "is_active_day").orderBy("activity_date")
+    )
+)
+from pyspark.sql.functions import count
+
+activity_streak = (
+    daily_fact
+    .filter(col("is_active_day") == 1)
+    .groupBy("user_id", "active_group")
+    .agg(count("*").alias("activity_day_streak"))
+)
 
 
 
+daily_fact = daily_fact.withColumn(
+    "sedentary_group",
+    daily_fact["row_num"] -
+    row_number().over(
+        Window.partitionBy("user_id", "low_sedentary").orderBy("activity_date")
+    )
+)
+sedentary_streak = (
+    daily_fact
+    .filter(col("low_sedentary") == 0)  # BAD sedentary days
+    .groupBy("user_id", "sedentary_group")
+    .agg(count("*").alias("sedentary_day_streak"))
+)
+from pyspark.sql.functions import variance
+
+w_7d = (
+    Window
+    .partitionBy("user_id")
+    .orderBy("activity_date")
+    .rowsBetween(-6, 0)
+)
+daily_fact = daily_fact.withColumn(
+    "activity_variance_7d",
+    variance("VeryActiveMinutes").over(w_7d)
+)
 
 
+# reward elgibility 
 
+from pyspark.sql.functions import when
 
-
-
-
+reward_fact = daily_features.withColumn(
+    "reward_eligible",
+    when(
+        (col("active_days_7d") >= 5) &
+        (col("activity_day_streak") >= 3) &
+        (col("sedentary_day_streak") < 4),
+        1
+    ).otherwise(0)
+)
 
 
 
