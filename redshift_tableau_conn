@@ -1,0 +1,23 @@
+DROP TABLE daily_summary;
+
+CREATE TABLE daily_summary (
+    user_id                VARCHAR(50),
+    day                    INT,
+    total_steps            BIGINT,
+    total_calories         DOUBLE PRECISION,
+    active_minutes         BIGINT,
+    sleep_minutes          BIGINT,
+    avg_intensity          DOUBLE PRECISION,
+    max_steps_in_minute    INT,
+    total_minutes_recorded BIGINT,
+    anomaly_score          DOUBLE PRECISION,
+    activity_level         VARCHAR(20),
+    processed_at           TIMESTAMP
+);
+COPY daily_summary
+FROM 's3://fitbit.gold.6006/daily_summary/'
+IAM_ROLE 'arn:aws:iam::224125369177:role/service-role/AmazonRedshift-CommandsAccessRole-20251106T103906'
+FORMAT AS PARQUET;
+
+SELECT COUNT(*) FROM daily_summary;
+SELECT * FROM daily_summary LIMIT 5;
