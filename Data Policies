@@ -1,0 +1,98 @@
+Policy Name: PII_MASKING_POLICY
+Type: Privacy Policy
+Regulation: HIPAA-adjacent
+
+Rule:
+"All user identifiers must be
+SHA-256 hashed before Silver layer"
+
+Applied to:
+→ user_id column in Silver
+→ user_id column in Gold
+→ user_id in Feature Store
+
+Enforcement:
+→ Glue Job 1 applies masking
+→ Automated - no manual step
+→ Audit logged in CloudWatch
+
+Owner: Compliance Team
+Status: Active ✅
+----------------------------------------------------------------------------------------------------------------------------------
+Policy Name: DATA_RETENTION_POLICY
+Type: Retention Policy
+
+Rules:
+→ Bronze (raw): 90 days retention
+→ Silver (processed): 1 year
+→ Gold (aggregated): 7 years
+→ ML models: 2 years
+
+Enforcement:
+→ S3 lifecycle rules
+→ Automated deletion
+→ CloudWatch alerts before deletion
+
+Owner: Data Engineering Team
+Status: Active ✅
+
+-------------------------------------------------------------------------------------------------------------------------------------
+Policy Name: DATA_ACCESS_POLICY
+Type: Access Control Policy
+
+Rules:
+→ Bronze layer:
+   Only Data Engineering team
+   
+→ Silver layer:
+   Data Engineering + Data Science
+   
+→ Gold layer:
+   All teams (read only)
+   
+→ Tableau dashboard:
+   Business users (aggregated only)
+
+Enforcement:
+→ IAM roles in AWS
+→ S3 bucket policies
+→ Redshift user permissions
+
+Owner: Data Governance Team
+Status: Active ✅
+
+-----------------------------------------------------------------------------------------------------------------------------------------
+
+Policy Name: DATA_QUALITY_POLICY
+Type: Quality Policy
+
+Rules:
+→ Bronze: >99% valid records
+→ Silver: 0 null user_ids
+→ Gold: complete daily records
+→ All layers: no duplicates
+
+Enforcement:
+→ Great Expectations checks
+→ Glue job schema validation
+→ CloudWatch quality alerts
+
+Owner: Data Engineering Team
+Status: Active ✅
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Policy Name: HEALTH_DATA_POLICY
+Type: Compliance Policy
+Regulation: HIPAA-adjacent
+
+Rules:
+→ No raw biometric data
+   in non-secure storage
+→ All health data encrypted
+   at rest (S3 encryption)
+→ All access audit logged
+→ No data shared externally
+   without masking
+
+Owner: Compliance Team
+Status: Active ✅
