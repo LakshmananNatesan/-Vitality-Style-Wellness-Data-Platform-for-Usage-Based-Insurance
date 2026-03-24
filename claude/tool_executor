@@ -1,0 +1,173 @@
+# tool_exec.py
+# Executes tools when Claude calls them
+# Connects to real AWS services
+
+import boto3
+import json
+import time
+
+# ─────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────
+REGION       = "us-east-2"
+DATABASE     = "fitbit_gold2"
+ATHENA_OUTPUT = "s3://athenaqueryresults6006/"
+DYNAMODB_TABLE = "fitbit-user-rewards"
+
+# ─────────────────────────────────────
+# MAIN ROUTER
+# ─────────────────────────────────────
+def execute_tool(tool_name, tool_input):
+    """
+    Routes tool calls to correct function
+    Called by mcp_client.py
+    """
+    print(f"\n🔧 Executing tool: {tool_name}")
+    print(f"   Input: {tool_input}")
+
+    if tool_name == "query_athena":
+        return run_athena_query(tool_input['sql'])
+
+    elif tool_name == "get_user_rewards":
+        return get_user_from_dynamodb(tool_input['user_id'])
+
+    elif tool_name == "get_all_rewards":
+        return get_all_users_from_dynamodb()
+
+    else:
+        return {"error": f"Unknown tool: {tool_name}"}
+
+# ─────────────────────────────────────
+# TOOL 1: ATHENA QUERY
+# ─────────────────────────────────────
+def run_athena_query(sql):
+    """
+    Runs SQL query on Athena
+    Returns results as list of dicts
+    """
+    try:
+        athena = boto3.client('athena', region_name=REGION)
+
+        # Step 1: Start query
+        print(f"   Running SQL: {sql[:100]}...")
+        response = athena.start_query_execution(
+            QueryString           = sql,
+            QueryExecutionContext = {'Database': DATABASE},
+            ResultConfiguration   = {'OutputLocation': ATHENA_OUTPUT}
+        )
+
+        query_id = response['QueryExecutionId']
+        print(f"   Query ID: {query_id}")
+
+        # Step 2: Wait for completion
+        # Poll every 2 seconds up to 30 seconds
+        for attempt in range(15):
+            time.sleep(2)
+            status_response = athena.get_query_execution(
+                QueryExecutionId=query_id
+            )
+            status = status_response['QueryExecution']['Status']['State']
+            print(f"   Query status: {status}")
+
+            if status == 'SUCCEEDED':
+                break
+            elif status in ['FAILED', 'CANCELLED']:
+                error = status_response['QueryExecution']['Status'].get(
+                    'StateChangeReason', 'Unknown error'
+                )
+                return {"error": f"Query failed: {error}"}
+
+        # Step 3: Get results
+        results = athena.get_query_results(QueryExecutionId=query_id)
+
+        # Step 4: Parse into clean format
+        rows    = results['ResultSet']['Rows']
+        headers = [col['VarCharValue'] for col in rows[0]['Data']]
+        data    = []
+
+        for row in rows[1:]:  # skip header row
+            record = {}
+            for i, col in enumerate(row['Data']):
+                record[headers[i]] = col.get('VarCharValue', '')
+            data.append(record)
+
+        print(f"   Returned {len(data)} rows")
+        return {"rows": data, "count": len(data)}
+
+    except Exception as e:
+        print(f"   ❌ Athena error: {str(e)}")
+        return {"error": str(e)}
+
+# ─────────────────────────────────────
+# TOOL 2: GET ONE USER FROM DYNAMODB
+# ─────────────────────────────────────
+def get_user_from_dynamodb(user_id):
+    """
+    Gets single user reward profile
+    from DynamoDB
+    """
+    try:
+        dynamodb = boto3.resource('dynamodb', region_name=REGION)
+        table    = dynamodb.Table(DYNAMODB_TABLE)
+
+        response = table.get_item(Key={'user_id': user_id})
+        item     = response.get('Item', None)
+
+        if item:
+            # Convert Decimal to int/float for JSON
+            clean_item = {}
+            for key, value in item.items():
+                if hasattr(value, '__float__'):
+                    clean_item[key] = float(value)
+                else:
+                    clean_item[key] = value
+
+            print(f"   Found user: {user_id}")
+            return {"user": clean_item, "found": True}
+        else:
+            print(f"   User not found: {user_id}")
+            return {"user": None, "found": False,
+                    "message": f"No rewards record for {user_id}"}
+
+    except Exception as e:
+        print(f"   ❌ DynamoDB error: {str(e)}")
+        return {"error": str(e)}
+
+# ─────────────────────────────────────
+# TOOL 3: GET ALL USERS FROM DYNAMODB
+# ─────────────────────────────────────
+def get_all_users_from_dynamodb():
+    """
+    Scans entire DynamoDB table
+    Returns all user reward profiles
+    """
+    try:
+        dynamodb = boto3.resource('dynamodb', region_name=REGION)
+        table    = dynamodb.Table(DYNAMODB_TABLE)
+
+        response = table.scan()
+        items    = response.get('Items', [])
+
+        # Convert Decimal to float
+        clean_items = []
+        for item in items:
+            clean_item = {}
+            for key, value in item.items():
+                if hasattr(value, '__float__'):
+                    clean_item[key] = float(value)
+                else:
+                    clean_item[key] = value
+            clean_items.append(clean_item)
+
+        # Sort by points descending
+        clean_items.sort(
+            key=lambda x: x.get('total_points', 0),
+            reverse=True
+        )
+
+        print(f"   Found {len(clean_items)} users")
+        return {"users": clean_items, "count": len(clean_items)}
+
+    except Exception as e:
+        print(f"   ❌ DynamoDB error: {str(e)}")
+        return {"error": str(e)}
