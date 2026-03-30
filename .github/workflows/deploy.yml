@@ -9,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
     - name: Checkout code
       uses: actions/checkout@v3
 
@@ -36,20 +35,28 @@ jobs:
     - name: Deploy Glue Silver script
       run: |
         aws s3 cp phase2/glue_silver.py \
-          s3://aws-glue-assets-224125369177-us-east-2/scripts/glue_silver.py
-        echo "Silver script deployed!"
+          s3://aws-glue-assets-224125369177-us-east-2/scripts/fitbit-silver-job.py
+        echo "Silver script deployed to S3!"
 
     - name: Deploy Glue Gold script
       run: |
         aws s3 cp phase2/glue_gold.py \
-          s3://aws-glue-assets-224125369177-us-east-2/scripts/glue_gold.py
-        echo "Gold script deployed!"
+          s3://aws-glue-assets-224125369177-us-east-2/scripts/fitbit-gold-job.py
+        echo "Gold script deployed to S3!"
 
     - name: Deploy Lambda function
       run: |
         cd phase3
         zip lambda.zip lambda_fxn.py
         aws lambda update-function-code \
-          --function-name fitbit-event-detector \
+          --function-name fitbit_business \
           --zip-file fileb://lambda.zip
         echo "Lambda deployed!"
+
+    - name: Verify deployments
+      run: |
+        echo "Verifying Silver script..."
+        aws s3 ls s3://aws-glue-assets-224125369177-us-east-2/scripts/fitbit-silver-job.py
+        echo "Verifying Gold script..."
+        aws s3 ls s3://aws-glue-assets-224125369177-us-east-2/scripts/fitbit-gold-job.py
+        echo "All deployments verified!"
