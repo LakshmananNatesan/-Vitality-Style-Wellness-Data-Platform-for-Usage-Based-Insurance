@@ -1,0 +1,10 @@
+.env
+*.env
+__pycache__/
+*.pyc
+.DS_Store
+*.gz
+*.parquet
+terraform/.terraform/
+terraform/*.tfstate
+*.zip
