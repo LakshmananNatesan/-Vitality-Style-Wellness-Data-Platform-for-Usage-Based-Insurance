@@ -1,0 +1,190 @@
+import json
+import boto3
+import os
+from datetime import datetime
+from decimal import Decimal
+
+# ─────────────────────────────────────
+# CLIENTS
+# ─────────────────────────────────────
+dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+sns_client = boto3.client('sns', region_name='us-east-2')
+
+# ─────────────────────────────────────
+# ENV VARIABLES
+# ─────────────────────────────────────
+TABLE_NAME    = os.environ['TABLE_NAME']
+SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+
+# ─────────────────────────────────────
+# BADGE THRESHOLDS
+# ─────────────────────────────────────
+BADGE_THRESHOLDS = [
+    (100,  "First Step 🥉"),
+    (500,  "5 Day Warrior 🥈"),
+    (1000, "10K Champion 🥇"),
+    (5000, "Fitness Legend 🏆")
+]
+
+# ─────────────────────────────────────
+# CHECK BADGES
+# ─────────────────────────────────────
+def check_badges(total_points, existing_badges):
+    new_badges = []
+    for threshold, badge_name in BADGE_THRESHOLDS:
+        if total_points >= threshold and badge_name not in existing_badges:
+            new_badges.append(badge_name)
+    return new_badges
+
+# ─────────────────────────────────────
+# PROCESS WORKOUT
+# ─────────────────────────────────────
+def process_workout(user_id, points_to_add, day):
+    table = dynamodb.Table(TABLE_NAME)
+
+    # Step 1: Read existing record
+    response = table.get_item(Key={'user_id': user_id})
+    existing = response.get('Item', None)
+
+    if existing:
+        # User exists — update
+        old_points        = int(existing.get('total_points', 0))
+        old_badges        = existing.get('badges', [])
+        old_workout_count = int(existing.get('workout_count', 0))
+    else:
+        # New user — start fresh
+        old_points        = 0
+        old_badges        = []
+        old_workout_count = 0
+
+    # Step 2: Calculate new values
+    new_points        = old_points + points_to_add
+    new_workout_count = old_workout_count + 1
+
+    # Step 3: Check for new badges
+    new_badges = check_badges(new_points, old_badges)
+    all_badges = old_badges + new_badges
+
+    # Step 4: Save to DynamoDB
+    table.put_item(Item={
+        'user_id'       : user_id,
+        'total_points'  : new_points,
+        'badges'        : all_badges,
+        'workout_count' : new_workout_count,
+        'last_day'      : day,
+        'last_updated'  : datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    })
+
+    print(f"✅ {user_id} → Points: {old_points} → {new_points}")
+
+    # Step 5: Build notification message
+    badge_msg = ""
+    if new_badges:
+        badge_msg = f"\n🏅 New badge unlocked: {', '.join(new_badges)}!"
+
+    notification = (
+        f"Great job {user_id}!\n"
+        f"+{points_to_add} points earned today\n"
+        f"Total points: {new_points}\n"
+        f"Total workouts: {new_workout_count}"
+        f"{badge_msg}"
+    )
+
+    # Step 6: Send SNS notification
+    sns_client.publish(
+        TopicArn = SNS_TOPIC_ARN,
+        Subject  = "Workout Reward Earned! 💪",
+        Message  = notification
+    )
+
+    print(f"📧 Notification sent for {user_id}")
+    return new_points, new_badges
+
+# ─────────────────────────────────────
+# PROCESS INACTIVITY
+# ─────────────────────────────────────
+def process_inactivity(user_id, day):
+    # No points — just send reminder
+    reminder = (
+        f"Hey {user_id}!\n"
+        f"No steps recorded on day {day}\n"
+        f"Time to get moving! 💪\n"
+        f"Even a short walk counts!"
+    )
+
+    sns_client.publish(
+        TopicArn = SNS_TOPIC_ARN,
+        Subject  = "Daily Activity Reminder 🏃",
+        Message  = reminder
+    )
+
+    print(f"📧 Inactivity reminder sent for {user_id}")
+
+# ─────────────────────────────────────
+# MAIN HANDLER
+# ─────────────────────────────────────
+def lambda_handler(event, context):
+    print("Reward Processor Lambda triggered!")
+    print(f"Records to process: {len(event['Records'])}")
+
+    processed = 0
+    failed    = 0
+
+    for record in event['Records']:
+        try:
+            # Step 1: Parse SQS message
+            body    = json.loads(record['body'])
+            user_id = body.get('user_id',    'UNKNOWN')
+            day     = body.get('day',        0)
+            event_type = body.get('event_type', '')
+            points  = body.get('points',     0)
+
+            print(f"Processing: {user_id} → {event_type}")
+
+            # Step 2: Handle each event type
+            if event_type == 'WORKOUT_COMPLETED':
+                new_points, new_badges = process_workout(
+                    user_id, points, day
+                )
+                print(f"✅ Workout processed: {user_id} → {new_points} pts")
+
+            elif event_type == 'INACTIVITY_DETECTED':
+                process_inactivity(user_id, day)
+                print(f"✅ Inactivity reminder sent: {user_id}")
+
+            elif event_type == 'FRAUD_DETECTED':
+                # Already handled by Lambda 1 via SNS
+                # Just log and skip
+                print(f"⚠️ Fraud already handled: {user_id} — skipping")
+
+            else:
+                print(f"❓ Unknown event type: {event_type}")
+
+            processed += 1
+
+        except Exception as e:
+            print(f"❌ Error processing record: {str(e)}")
+            failed += 1
+            # Raise error so SQS retries this message
+            raise e
+
+    print(f"Processed: {processed} | Failed: {failed}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'processed': processed,
+            'failed':    failed
+        })
+    }
+
+
+
+Test Template
+{
+  "Records": [
+    {
+      "body": "{\"user_id\": \"USR_test123\", \"day\": 1, \"event_type\": \"WORKOUT_COMPLETED\", \"message\": \"Amazing! You hit 10000 steps today!\", \"priority\": \"LOW\", \"points\": 100, \"timestamp\": \"2026-03-23 23:00:00\"}"
+    }
+  ]
+}

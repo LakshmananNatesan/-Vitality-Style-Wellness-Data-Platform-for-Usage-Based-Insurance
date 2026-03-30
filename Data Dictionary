@@ -1,0 +1,102 @@
+INGESTION TERMS:
+━━━━━━━━━━━━━━━
+Term: ActivityMinute
+Definition: "Timestamp representing
+exact minute when Fitbit device
+recorded biometric measurement
+Format: MM/DD/YYYY HH:MM:SS AM/PM"
+Owner: Data Engineering Team
+Status: Approved 
+
+Term: Steps
+Definition: "Number of steps taken
+by user in one minute period
+Valid range: 0-200 steps/minute
+Source: Fitbit accelerometer"
+Owner: Data Engineering Team
+Status: Approved 
+
+Term: Calories
+Definition: "Calories burned by user
+in one minute period
+Valid range: 0-20 calories/minute
+Unit: kilocalories (kcal)"
+Owner: Data Engineering Team
+Status: Approved 
+
+Term: Intensity
+Definition: "Physical activity intensity
+level recorded per minute
+Valid values: 0,1,2,3
+0=Sedentary, 1=Light
+2=Moderate, 3=Very Active"
+Owner: Data Engineering Team
+Status: Approved 
+
+Term: MET
+Definition: "Metabolic Equivalent of Task
+Measure of exercise intensity
+1 MET = energy at rest
+Values above 3 = moderate activity"
+Owner: Data Science Team
+Status: Approved 
+
+Term: Sleep Value
+Definition: "Sleep stage recorded
+per minute by Fitbit device
+1=Asleep, 2=Restless, 3=Awake"
+Owner: Data Engineering Team
+Status: Approved 
+
+DERIVED TERMS:
+━━━━━━━━━━━━━
+Term: Anomaly Score
+Definition: "ML-generated probability
+score indicating likelihood of
+fraudulent step-count activity
+Range: 0.0 to 1.0
+Threshold: >0.8 = fraud suspected"
+Owner: Data Science Team
+Status: Approved 
+
+Term: Health Risk Level
+Definition: "User health risk category
+derived from WHO physical activity
+guidelines
+Values: LOW, MEDIUM, HIGH"
+Owner: Analytics Team
+Status: Approved 
+
+Term: Active Minutes
+Definition: "Total minutes per day
+where steps > 10
+WHO target: 30+ active minutes/day"
+Owner: Analytics Team
+Status: Approved 
+
+Term: User ID (Masked)
+Definition: "SHA-256 hashed user
+identifier replacing original
+Fitbit device ID for HIPAA-adjacent
+PII compliance
+Format: USR_XXXXXXXX"
+Owner: Data Governance Team
+Status: Approved 
+
+POLICY TERMS:
+━━━━━━━━━━━━
+Term: PHI (Protected Health Information)
+Definition: "Any health data that
+can identify an individual user
+Includes: user_id, device_id
+Must be masked before Silver layer"
+Owner: Compliance Team
+Status: Approved 
+
+Term: PII (Personally Identifiable Information)
+Definition: "Data that can identify
+specific individual
+In this project: original user_id
+Must be SHA-256 hashed at ingestion"
+Owner: Compliance Team
+Status: Approved 

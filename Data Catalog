@@ -1,0 +1,116 @@
+Asset: bronze_minute_activity
+Type: Data Set
+Location: s3://fitbit-bronze-layer/minute_data/
+Format: JSON (GZIP compressed)
+Owner: Data Engineering Team
+Classification: RAW / SENSITIVE
+
+Columns:
+→ user_id (STRING) - original device ID
+→ timestamp (STRING) - raw format
+→ steps (INTEGER) - raw steps
+→ calories (DOUBLE) - raw calories
+→ intensity (INTEGER) - raw intensity
+→ sleep_value (INTEGER) - raw sleep
+→ event_type (STRING) - minute_activity
+→ source (STRING) - fitbit_simulator
+→ ingest_time (TIMESTAMP) - load time
+
+Quality Rules:
+→ user_id NOT NULL
+→ timestamp NOT NULL
+→ steps BETWEEN 0 AND 200
+→ calories BETWEEN 0 AND 20
+→ intensity IN (0,1,2,3)
+
+-----------------------------------------------------------------------------------------------------------
+
+Asset: silver_minute_activity
+Type: Data Set
+Location: s3://fitbit-silver-layer/minute_data/
+Format: Parquet (Snappy compressed)
+Owner: Data Engineering Team
+Classification: PROCESSED / MASKED
+
+Columns:
+→ user_id (STRING) - SHA-256 masked
+→ timestamp (TIMESTAMP) - ISO format
+→ steps (INTEGER) - validated
+→ calories (DOUBLE) - validated
+→ intensity (INTEGER) - validated
+→ sleep_value (INTEGER) - nullable
+→ is_active (INTEGER) - derived
+→ is_sleeping (INTEGER) - derived
+→ hour_of_day (INTEGER) - derived
+→ day_of_week (INTEGER) - derived
+→ year (INTEGER) - partition key
+→ month (INTEGER) - partition key
+→ day (INTEGER) - partition key
+→ processed_at (TIMESTAMP) - audit
+
+Quality Rules:
+→ user_id starts with "USR_"
+→ timestamp IS NOT NULL
+→ No duplicates (user_id + timestamp)
+→ year BETWEEN 2016 AND 2026
+---------------------------------------------------------------------------------------------------------------
+
+Asset: gold_daily_summary
+Type: Data Set
+Location: s3://fitbit-gold-layer/daily_summary/
+Format: Parquet
+Owner: Analytics Team
+Classification: AGGREGATED / BUSINESS READY
+
+Columns:
+→ user_id (STRING) - masked
+→ year (INTEGER)
+→ month (INTEGER)
+→ day (INTEGER)
+→ total_steps (INTEGER)
+→ total_calories (DOUBLE)
+→ active_minutes (INTEGER)
+→ sleep_minutes (INTEGER)
+→ avg_intensity (DOUBLE)
+→ anomaly_score (DOUBLE)
+→ activity_level (STRING)
+→ health_risk (STRING)
+→ health_score (INTEGER)
+→ processed_at (TIMESTAMP)
+
+Quality Rules:
+→ total_steps >= 0
+→ anomaly_score BETWEEN 0 AND 1
+→ activity_level IN
+  (HIGH, MEDIUM, LOW, SEDENTARY)
+→ health_risk IN (LOW, MEDIUM, HIGH)
+---------------------------------------------------------------------------------------------------------------------------
+
+Asset: fraud_detection_model
+Type: ML Model
+Location: s3://fitbit-gold-layer/model_output/
+Framework: XGBoost
+Owner: Data Science Team
+Classification: MODEL / INTERNAL
+
+Attributes:
+→ Model type: Binary classification
+→ Input features: 6
+→ Training data: 992 rows
+→ Test accuracy: 97.2%
+→ AUC score: 0.94
+→ Last trained: 2026-03-03
+→ Endpoint: fitbit-fraud-detector
+
+Asset: fitbit_feature_store
+Type: Feature Store
+Location: SageMaker Feature Store
+Owner: Data Science Team
+
+Features stored:
+→ steps_7day_avg
+→ steps_7day_std
+→ calories_avg
+→ sleep_avg
+→ same_steps_streak
+→ activity_score

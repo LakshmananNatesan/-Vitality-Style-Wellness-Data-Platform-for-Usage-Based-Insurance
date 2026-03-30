@@ -1,0 +1,48 @@
+COMPLETE END TO END LINEAGE:
+
+[Fitbit CSV Files]
+s3://fitbit.insurance.analysis/
+        ↓ Python Simulator
+[Kinesis Firehose]
+fitbit.firehose.streams
+        ↓ Buffer 60 sec
+[Bronze Layer]
+s3://fitbit-bronze-layer/
+        ↓ Glue Job 1 (PySpark)
+        → Validates schema
+        → Fixes data types
+        → Masks user_id
+        → Standardizes timestamp
+[Silver Layer]
+s3://fitbit-silver-layer/
+        ↓ Glue Job 2 (PySpark)
+        → Aggregates to daily
+        → Calculates health scores
+        → Risk stratification
+[Gold Layer]
+s3://fitbit-gold-layer/
+        ├── ↓ Redshift COPY
+        │   [Redshift Warehouse]
+        │   fitbit_analytics schema
+        │       ↓ Tableau connection
+        │   [Tableau Dashboard]
+        │
+        ├── ↓ EventBridge trigger
+        │   [Lambda Function]
+        │       ↓ Feature Store lookup
+        │   [SageMaker Endpoint]
+        │   fitbit-fraud-detector
+        │       ↓ fraud score
+        │   [Step Functions]
+        │       ↓
+        │   [SQS Queue]
+        │       ↓
+        │   [Lambda Executor]
+        │       ↓
+        │   [SNS Notification]
+        │
+        └── ↓ Midnight batch
+            [Glue Feature Job]
+                ↓
+            [Feature Store]
+            Updated daily
