@@ -1,0 +1,222 @@
+import dlt
+import hashlib
+from pyspark.sql import functions as F
+from pyspark.sql.types import *
+
+# ================================
+# SILVER LAYER
+# ================================
+
+# ================================
+# STEP 1 — DEDUPLICATION
+# ================================
+@dlt.table(
+    name="silver_fitbit_deduped",
+    comment="Deduplicated Fitbit data",
+    table_properties={
+        "quality": "silver",
+        "format": "iceberg"
+    }
+)
+def silver_deduplicated():
+    return (
+        dlt.read_stream("bronze_fitbit_raw")
+        # Remove exact duplicates
+        # based on user + timestamp ✅
+        .dropDuplicates([
+            "user_id",
+            "timestamp"
+        ])
+    )
+
+# ================================
+# STEP 2 — DATA QUALITY ENFORCEMENT
+# ================================
+@dlt.table(
+    name="silver_fitbit_validated",
+    comment="Quality validated Fitbit data"
+)
+
+# Quality Rule 1 — Steps range:
+@dlt.expect(
+    "valid_steps_range",
+    "steps >= 0 AND steps <= 200"
+)
+
+# Quality Rule 2 — Calories range:
+@dlt.expect(
+    "valid_calories_range",
+    "calories >= 0 AND calories <= 20"
+)
+
+# Quality Rule 3 — User ID not null:
+@dlt.expect_or_drop(
+    "user_id_not_null",
+    "user_id IS NOT NULL"
+)
+
+# Quality Rule 4 — Timestamp not null:
+@dlt.expect_or_fail(
+    "timestamp_not_null",
+    "timestamp IS NOT NULL"
+)
+
+# Quality Rule 5 — Valid intensity:
+@dlt.expect_or_drop(
+    "valid_intensity",
+    "intensity >= 0 AND intensity <= 3"
+)
+
+def silver_validated():
+    return (
+        dlt.read_stream(
+            "silver_fitbit_deduped"
+        )
+        # Fix data types
+        .withColumn(
+            "steps",
+            F.col("steps").cast(IntegerType())
+        )
+        .withColumn(
+            "calories",
+            F.col("calories").cast(DoubleType())
+        )
+        .withColumn(
+            "intensity",
+            F.col("intensity").cast(IntegerType())
+        )
+        .withColumn(
+            "sleep_value",
+            F.col("sleep_value").cast(IntegerType())
+        )
+        # Fix timestamp
+        .withColumn(
+            "timestamp",
+            F.to_timestamp(
+                F.col("timestamp"),
+                "M/d/yyyy h:mm:ss a"
+            )
+        )
+    )
+
+# ================================
+# STEP 3 — PII MASKING
+# ================================
+@dlt.table(
+    name="silver_fitbit_masked",
+    comment="PII masked Fitbit data"
+)
+def silver_pii_masked():
+
+    # SHA-256 PII masking UDF
+    mask_udf = F.udf(
+        lambda uid: "USR_" + hashlib.sha256(
+            str(uid).encode()
+        ).hexdigest()[:8]
+        if uid else None,
+        StringType()
+    )
+
+    return (
+        dlt.read_stream(
+            "silver_fitbit_validated"
+        )
+        # Mask user_id ✅
+        .withColumn(
+            "user_id",
+            mask_udf(F.col("user_id"))
+        )
+        # Tag PII column in Unity Catalog
+        # via table properties
+    )
+
+# ================================
+# STEP 4 — DERIVED COLUMNS
+# ================================
+@dlt.table(
+    name="silver_fitbit_enriched",
+    comment="Enriched Fitbit data"
+)
+def silver_enriched():
+    return (
+        dlt.read_stream(
+            "silver_fitbit_masked"
+        )
+        # Extract date parts
+        .withColumn(
+            "year",
+            F.year(F.col("timestamp"))
+        )
+        .withColumn(
+            "month",
+            F.month(F.col("timestamp"))
+        )
+        .withColumn(
+            "day",
+            F.dayofmonth(F.col("timestamp"))
+        )
+        .withColumn(
+            "hour_of_day",
+            F.hour(F.col("timestamp"))
+        )
+        .withColumn(
+            "day_of_week",
+            F.dayofweek(F.col("timestamp"))
+        )
+        # Derived business columns
+        .withColumn(
+            "is_active",
+            F.when(
+                F.col("steps") > 10, 1
+            ).otherwise(0)
+        )
+        .withColumn(
+            "is_sleeping",
+            F.when(
+                F.col("sleep_value").isNotNull(),
+                1
+            ).otherwise(0)
+        )
+        .withColumn(
+            "processed_at",
+            F.current_timestamp()
+        )
+    )
+
+# ================================
+# STEP 5 — FINAL SILVER TABLE
+# (with CDC + Iceberg)
+# ================================
+@dlt.table(
+    name="silver_fitbit",
+    comment="Final Silver Fitbit table",
+    table_properties={
+        "quality": "silver",
+        "format": "iceberg",
+        "write.format.default": "parquet",
+        "write.parquet.compression-codec": "snappy",
+        # Enable Change Data Feed ✅
+        "delta.enableChangeDataFeed": "true"
+    },
+    partition_cols=["year", "month", "day"]
+)
+def silver_final():
+    return dlt.read_stream(
+        "silver_fitbit_enriched"
+    )
+
+# ================================
+# AUTO CDC — Apply Changes
+# ================================
+dlt.apply_changes(
+    target = "silver_fitbit",
+    source = "silver_fitbit_enriched",
+    keys = ["user_id", "timestamp"],
+    sequence_by = F.col("processed_at"),
+    apply_as_deletes = F.expr(
+        "operation_type = 'DELETE'"
+    ),
+    except_column_list = [
+        "operation_type"
+    ]
+)
