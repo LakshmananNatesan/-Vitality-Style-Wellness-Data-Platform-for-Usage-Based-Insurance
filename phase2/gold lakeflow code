@@ -1,0 +1,274 @@
+import dlt
+from pyspark.sql import functions as F
+from pyspark.sql.types import *
+
+# ================================
+# GOLD LAYER
+# ================================
+
+# ================================
+# STEP 1 — READ FROM SILVER CDF
+# (Only changed records!)
+# ================================
+@dlt.table(
+    name="gold_fitbit_changes",
+    comment="Silver changes for Gold processing"
+)
+def gold_silver_changes():
+    return (
+        # Read ONLY changes from Silver
+        # using CDF — not all data!
+        spark.readStream
+        .format("delta")
+        .option("readChangeData", True)
+        .table(
+            "fitbit_catalog.silver.silver_fitbit"
+        )
+        # Only process inserts and updates
+        .filter(
+            F.col("_change_type").isin([
+                "insert",
+                "update_postimage"
+            ])
+        )
+    )
+
+# ================================
+# STEP 2 — DAILY AGGREGATIONS
+# ================================
+@dlt.table(
+    name="gold_fitbit_daily",
+    comment="Daily Fitbit activity summary",
+    table_properties={
+        "quality": "gold",
+        "format": "iceberg",
+        "write.format.default": "parquet",
+        "write.parquet.compression-codec": "snappy"
+    },
+    partition_cols=["year", "month"]
+)
+
+# Gold Quality Rules:
+@dlt.expect(
+    "valid_total_steps",
+    "total_steps >= 0"
+)
+@dlt.expect(
+    "valid_total_calories",
+    "total_calories >= 0"
+)
+@dlt.expect_or_drop(
+    "valid_user_id",
+    "user_id IS NOT NULL"
+)
+@dlt.expect(
+    "valid_anomaly_score",
+    "anomaly_score >= 0 AND anomaly_score <= 1"
+)
+
+def gold_daily_aggregation():
+    return (
+        dlt.read_stream(
+            "gold_fitbit_changes"
+        )
+        # ─────────────────────────
+        # Aggregate to daily summary
+        # Same as your Glue job! ✅
+        # ─────────────────────────
+        .groupBy(
+            "user_id",
+            "year",
+            "month",
+            "day"
+        )
+        .agg(
+            # Steps metrics
+            F.sum("steps")
+             .alias("total_steps"),
+
+            # Calories metrics
+            F.sum("calories")
+             .alias("total_calories"),
+
+            # Activity metrics
+            F.sum("is_active")
+             .alias("active_minutes"),
+
+            # Sleep metrics
+            F.sum("is_sleeping")
+             .alias("sleep_minutes"),
+
+            # Intensity metrics
+            F.avg("intensity")
+             .alias("avg_intensity"),
+
+            # Peak activity
+            F.max("steps")
+             .alias("max_steps_in_minute"),
+
+            # Coverage
+            F.count("*")
+             .alias("total_minutes_recorded")
+        )
+
+        # ─────────────────────────
+        # Anomaly Score
+        # ─────────────────────────
+        .withColumn(
+            "anomaly_score",
+            F.when(
+                F.col("total_steps") > 15000,
+                0.8
+            )
+            .when(
+                F.col("total_steps") > 12000,
+                0.5
+            )
+            .when(
+                F.col("total_steps") == 0,
+                0.3
+            )
+            .otherwise(0.1)
+        )
+
+        # ─────────────────────────
+        # Activity Level
+        # ─────────────────────────
+        .withColumn(
+            "activity_level",
+            F.when(
+                F.col("total_steps") >= 10000,
+                "HIGH"
+            )
+            .when(
+                F.col("total_steps") >= 5000,
+                "MEDIUM"
+            )
+            .when(
+                F.col("total_steps") >= 1000,
+                "LOW"
+            )
+            .otherwise("SEDENTARY")
+        )
+
+        # ─────────────────────────
+        # Health Risk Score
+        # ─────────────────────────
+        .withColumn(
+            "health_risk",
+            F.when(
+                F.col("activity_level") == "SEDENTARY",
+                "HIGH_RISK"
+            )
+            .when(
+                F.col("activity_level") == "LOW",
+                "MEDIUM_RISK"
+            )
+            .otherwise("LOW_RISK")
+        )
+
+        # ─────────────────────────
+        # Round decimals
+        # ─────────────────────────
+        .withColumn(
+            "total_calories",
+            F.round(F.col("total_calories"), 2)
+        )
+        .withColumn(
+            "avg_intensity",
+            F.round(F.col("avg_intensity"), 4)
+        )
+
+        # ─────────────────────────
+        # Metadata
+        # ─────────────────────────
+        .withColumn(
+            "processed_at",
+            F.current_timestamp()
+        )
+        .withColumn(
+            "pipeline_version",
+            F.lit("v1.0")
+        )
+    )
+
+# ================================
+# STEP 3 — FRAUD DETECTION LAYER
+# ================================
+@dlt.table(
+    name="gold_fitbit_fraud",
+    comment="Fraud flagged records"
+)
+@dlt.expect_or_drop(
+    "valid_fraud_flag",
+    "fraud_flag IN ('FRAUD', 'CLEAN')"
+)
+def gold_fraud_detection():
+    return (
+        dlt.read(
+            "gold_fitbit_daily"
+        )
+        .withColumn(
+            "fraud_flag",
+            F.when(
+                F.col("anomaly_score") >= 0.8,
+                "FRAUD"
+            )
+            .otherwise("CLEAN")
+        )
+        .withColumn(
+            "fraud_reason",
+            F.when(
+                F.col("total_steps") > 15000,
+                "Steps exceed daily maximum"
+            )
+            .when(
+                F.col("anomaly_score") >= 0.8,
+                "Anomaly score threshold exceeded"
+            )
+            .otherwise(None)
+        )
+    )
+
+# ================================
+# STEP 4 — INSURANCE RISK LAYER
+# ================================
+@dlt.table(
+    name="gold_fitbit_insurance",
+    comment="Insurance risk scoring"
+)
+def gold_insurance_risk():
+    return (
+        dlt.read(
+            "gold_fitbit_fraud"
+        )
+        .withColumn(
+            "insurance_risk_score",
+            # Calculate risk 0-100
+            F.when(
+                F.col("activity_level") == "HIGH",
+                F.lit(10)     # Low risk ✅
+            )
+            .when(
+                F.col("activity_level") == "MEDIUM",
+                F.lit(30)
+            )
+            .when(
+                F.col("activity_level") == "LOW",
+                F.lit(60)
+            )
+            .otherwise(F.lit(90)) # High risk ❌
+        )
+        .withColumn(
+            "premium_adjustment",
+            F.when(
+                F.col("insurance_risk_score") <= 10,
+                "DISCOUNT_10%"    # Reward active ✅
+            )
+            .when(
+                F.col("insurance_risk_score") >= 90,
+                "SURCHARGE_20%"   # Penalize inactive ❌
+            )
+            .otherwise("STANDARD")
+        )
+    )
