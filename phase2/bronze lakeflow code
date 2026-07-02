@@ -1,12 +1,15 @@
-# bronze_pipeline.py
 import dlt
 from pyspark.sql.functions import *
-from pyspark.sql.types import *
 
 # ================================
-# BRONZE — Raw Ingestion
+# CONFIGURATION
 # ================================
+BRONZE_PATH = "s3://fitbit.bronze.6006/minute_data/"
+SCHEMA_PATH = "s3://fitbit.bronze.6006/schema/"
 
+# ================================
+# BRONZE TABLE
+# ================================
 @dlt.table(
     name="bronze_fitbit_raw",
     comment="Raw Fitbit minute activity data",
@@ -16,22 +19,45 @@ from pyspark.sql.types import *
     }
 )
 def bronze_fitbit_raw():
+
+    # Read schema if exists
+    # Auto Loader handles schema
+    # evolution automatically ✅
+
     return (
         spark.readStream
-        .format("cloudFiles")        # Auto Loader ✅
+        .format("cloudFiles")
         .option(
             "cloudFiles.format",
-            "json"                   # JSON from Kinesis ✅
+            "json"
         )
         .option(
             "cloudFiles.schemaLocation",
-            "s3://fitbit.bronze.6006/schema/"
+            SCHEMA_PATH
         )
         .option(
             "cloudFiles.inferColumnTypes",
-            "true"                   # Auto detect types ✅
+            "true"
         )
-        .load(
-            "s3://fitbit.bronze.6006/minute_data/"
+        .option(
+            "cloudFiles.schemaEvolutionMode",
+            "addNewColumns"          # Handle new columns ✅
+        )
+        .load(BRONZE_PATH)
+        .withColumn(
+            "ingestion_timestamp",
+            current_timestamp()      # When ingested ✅
+        )
+        .withColumn(
+            "source_file",
+            input_file_name()        # Which file ✅
+        )
+        .withColumn(
+            "data_source",
+            lit("fitbit_simulator")  # Where from ✅
+        )
+        .withColumn(
+            "pipeline_name",
+            lit("fitbit_lakeflow")   # Which pipeline ✅
         )
     )
