@@ -1,0 +1,37 @@
+# bronze_pipeline.py
+import dlt
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+
+# ================================
+# BRONZE — Raw Ingestion
+# ================================
+
+@dlt.table(
+    name="bronze_fitbit_raw",
+    comment="Raw Fitbit minute activity data",
+    table_properties={
+        "quality": "bronze",
+        "pipelines.autoOptimize.managed": "true"
+    }
+)
+def bronze_fitbit_raw():
+    return (
+        spark.readStream
+        .format("cloudFiles")        # Auto Loader ✅
+        .option(
+            "cloudFiles.format",
+            "json"                   # JSON from Kinesis ✅
+        )
+        .option(
+            "cloudFiles.schemaLocation",
+            "s3://fitbit.bronze.6006/schema/"
+        )
+        .option(
+            "cloudFiles.inferColumnTypes",
+            "true"                   # Auto detect types ✅
+        )
+        .load(
+            "s3://fitbit.bronze.6006/minute_data/"
+        )
+    )
