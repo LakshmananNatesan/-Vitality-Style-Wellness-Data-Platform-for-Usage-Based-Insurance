@@ -1,0 +1,59 @@
+
+import boto3
+import pandas as pd
+import io
+from sklearn.model_selection import train_test_split
+
+s3 = boto3.client('s3', region_name='us-east-2')
+
+# ─────────────────────────
+# Read Gold data from S3
+# ─────────────────────────
+print("Reading Gold data...")
+
+response = s3.get_object(
+    Bucket='fitbit.gold.6006',
+    Key='daily_summary/'
+)
+
+# Read all Gold parquet files
+import awswrangler as wr
+
+df = wr.s3.read_parquet(
+    path='s3://fitbit.gold.6006/daily_summary/',
+    boto3_session=boto3.Session(
+        region_name='us-east-2'
+    )
+)
+
+print(f"Total Gold rows: {len(df)}")
+print(df.head())
+
+# Create label column
+# Based on anomaly_score
+
+df['label'] = df['anomaly_score'].apply(
+    lambda x: 1 if x >= 0.8 else 0
+)
+# 1 = FRAUD
+# 0 = NORMAL
+
+print("Label distribution:")
+print(df['label'].value_counts())
+
+# Select features
+features = [
+    'total_steps',
+    'total_calories',
+    'active_minutes',
+    'sleep_minutes',
+    'avg_intensity',
+    'max_steps_in_minute'
+]
+
+# Create X and y
+X = df[features].fillna(0)
+y = df['label']
+
+print(f"Features shape: {X.shape}")
+print(f"Label shape: {y.shape}")
