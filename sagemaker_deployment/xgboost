@@ -1,0 +1,74 @@
+import sagemaker
+from sagemaker import get_execution_role
+from sagemaker.inputs import TrainingInput
+from sagemaker.xgboost import XGBoost
+
+# SageMaker session
+session = sagemaker.Session()
+role = "arn:aws:iam::224125369177:role/SageMakerRole"
+region = 'us-east-2'
+
+# XGBoost container
+container = sagemaker.image_uris.retrieve(
+    framework='xgboost',
+    region=region,
+    version='1.5-1'
+)
+
+print(f"XGBoost container: {container}")
+
+# Create estimator
+xgb_estimator = sagemaker.estimator.Estimator(
+    image_uri=container,
+    role=role,
+    instance_count=1,
+    instance_type='ml.m5.xlarge',
+    # Cheap training instance ✅
+    output_path='s3://fitbit.gold.6006/model/',
+    sagemaker_session=session
+)
+
+# Set hyperparameters
+xgb_estimator.set_hyperparameters(
+    objective='binary:logistic',
+    # Binary fraud detection
+    num_round=100,
+    # 100 trees
+    max_depth=5,
+    # Tree depth
+    eta=0.2,
+    # Learning rate
+    eval_metric='auc',
+    # Measure accuracy
+    scale_pos_weight=5
+    # Handle imbalanced fraud data
+)
+
+# Training data location
+train_input = TrainingInput(
+    's3://fitbit.gold.6006/training/train.csv',
+    content_type='csv'
+)
+
+test_input = TrainingInput(
+    's3://fitbit.gold.6006/training/test.csv',
+    content_type='csv'
+)
+
+# TRAIN THE MODEL!
+print("Training XGBoost model...")
+print("This takes 5-10 minutes...")
+
+xgb_estimator.fit(
+    inputs={
+        'train': train_input,
+        'validation': test_input
+    },
+    wait=True
+)
+
+print("Model trained! ✅")
+print(
+    f"Model at: "
+    f"s3://fitbit.gold.6006/model/"
+)
