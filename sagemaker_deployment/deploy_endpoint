@@ -1,0 +1,21 @@
+# Deploy trained model as endpoint
+
+print("Deploying endpoint...")
+
+predictor = xgb_estimator.deploy(
+    initial_instance_count=1,
+    instance_type='ml.t2.medium',
+    # Cheapest inference instance ✅
+    endpoint_name='fitbit-xgboost-endpoint'
+)
+
+print("Endpoint deployed! ✅")
+print("Name: fitbit-xgboost-endpoint")
+
+# Quick test
+import numpy as np
+
+test_features = "8500,2100,120,480,1.2,15"
+
+response = predictor.predict(test_features)
+print(f"Test prediction: {response}")
