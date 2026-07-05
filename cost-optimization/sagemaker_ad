@@ -1,0 +1,263 @@
+# lambda_sagemaker_optimize.py
+import boto3
+import json
+import os
+import io
+import pandas as pd
+from datetime import datetime
+
+# ─────────────────────────
+# Config
+# ─────────────────────────
+ENDPOINT_NAME = os.environ.get(
+    'ENDPOINT_NAME',
+    'fitbit-xgboost-endpoint'
+)
+ENDPOINT_CONFIG = os.environ.get(
+    'ENDPOINT_CONFIG',
+    'fitbit-xgboost-config'
+)
+OUTPUT_BUCKET = os.environ.get(
+    'OUTPUT_BUCKET',
+    'fitbit.gold.6006'
+)
+SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
+
+LABEL_MAP = {
+    0.0: "HIGH",
+    1.0: "MEDIUM",
+    2.0: "LOW",
+    3.0: "SEDENTARY"
+}
+
+FEATURE_COLUMNS = [
+    "total_steps",
+    "total_calories",
+    "active_minutes",
+    "sleep_minutes",
+    "avg_intensity",
+    "max_steps_in_minute"
+]
+
+def lambda_handler(event, context):
+
+    sagemaker_runtime = boto3.client(
+        'sagemaker-runtime',
+        region_name='us-east-2'
+    )
+    sagemaker_mgmt = boto3.client(
+        'sagemaker',
+        region_name='us-east-2'
+    )
+    s3 = boto3.client('s3', region_name='us-east-2')
+    sns = boto3.client('sns', region_name='us-east-2')
+
+    print("=" * 50)
+    print("SageMaker Optimized Prediction Starting...")
+    print("=" * 50)
+
+    # ─────────────────────────
+    # Step 1: Read Gold file
+    # ─────────────────────────
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = event['Records'][0]['s3']['object']['key']
+
+    print(f"Gold file: s3://{bucket}/{key}")
+
+    s3_obj = s3.get_object(Bucket=bucket, Key=key)
+    buffer = io.BytesIO(s3_obj['Body'].read())
+    df = pd.read_parquet(buffer)
+
+    print(f"Total users to predict: {len(df)}")
+
+    # ─────────────────────────
+    # Step 2: Create endpoint
+    # if not exists
+    # ─────────────────────────
+    endpoint_created = False
+
+    try:
+        response = sagemaker_mgmt.describe_endpoint(
+            EndpointName=ENDPOINT_NAME
+        )
+        status = response['EndpointStatus']
+        print(f"Endpoint exists: {status}")
+
+        # Wait if creating
+        if status == 'Creating':
+            print("Waiting for endpoint...")
+            waiter = sagemaker_mgmt.get_waiter(
+                'endpoint_in_service'
+            )
+            waiter.wait(EndpointName=ENDPOINT_NAME)
+
+    except sagemaker_mgmt.exceptions.ClientError:
+        # Endpoint doesn't exist - create it
+        print("Creating endpoint...")
+        sagemaker_mgmt.create_endpoint(
+            EndpointName=ENDPOINT_NAME,
+            EndpointConfigName=ENDPOINT_CONFIG
+        )
+        # Wait for endpoint ready
+        waiter = sagemaker_mgmt.get_waiter(
+            'endpoint_in_service'
+        )
+        waiter.wait(EndpointName=ENDPOINT_NAME)
+        endpoint_created = True
+        print("Endpoint created ✅")
+
+    # ─────────────────────────
+    # Step 3: Batch prediction
+    # ALL rows at once ✅
+    # ─────────────────────────
+    print("Making predictions for ALL users...")
+
+    # Prepare features for ALL rows
+    features_df = df[FEATURE_COLUMNS].fillna(0)
+    features_csv = features_df.to_csv(
+        index=False,
+        header=False
+    )
+
+    # One API call for ALL users
+    response = sagemaker_runtime.invoke_endpoint(
+        EndpointName=ENDPOINT_NAME,
+        ContentType='text/csv',
+        Body=features_csv
+    )
+
+    # Get ALL predictions
+    results = response['Body'] \
+        .read() \
+        .decode('utf-8') \
+        .strip() \
+        .split('\n')
+
+    # ─────────────────────────
+    # Step 4: Map predictions
+    # ─────────────────────────
+    predictions = []
+
+    for i, (_, row) in enumerate(df.iterrows()):
+
+        if i < len(results):
+            prediction = float(results[i])
+            activity = LABEL_MAP.get(
+                prediction, "UNKNOWN"
+            )
+        else:
+            prediction = -1
+            activity = "UNKNOWN"
+
+        predictions.append({
+            'user_id': str(row.get('user_id', '')),
+            'date': f"{row.get('year')}-"
+                    f"{row.get('month')}-"
+                    f"{row.get('day')}",
+            'total_steps': int(
+                row.get('total_steps', 0)
+            ),
+            'total_calories': float(
+                row.get('total_calories', 0)
+            ),
+            'predicted_activity': activity,
+            'raw_prediction': prediction,
+            'anomaly_score': float(
+                row.get('anomaly_score', 0)
+            )
+        })
+
+        print(
+            f"{row.get('user_id')}: "
+            f"{activity} "
+            f"(steps: {row.get('total_steps')})"
+        )
+
+    # ─────────────────────────
+    # Step 5: Save ALL results
+    # ─────────────────────────
+    output = {
+        'total_users': len(predictions),
+        'predictions': predictions,
+        'timestamp': datetime.now().strftime(
+            '%Y-%m-%d %H:%M:%S'
+        ),
+        'source_file': f"s3://{bucket}/{key}"
+    }
+
+    output_key = (
+        f"predictions/"
+        f"{datetime.now().strftime('%Y-%m-%d')}"
+        f".json"
+    )
+
+    s3.put_object(
+        Bucket=OUTPUT_BUCKET,
+        Key=output_key,
+        Body=json.dumps(output, indent=2),
+        ContentType='application/json'
+    )
+
+    print(f"✅ {len(predictions)} predictions saved")
+
+    # ─────────────────────────
+    # Step 6: DELETE endpoint
+    # after predictions done
+    # COST OPTIMIZATION! ✅
+    # ─────────────────────────
+    print("Deleting endpoint to save cost...")
+
+    sagemaker_mgmt.delete_endpoint(
+        EndpointName=ENDPOINT_NAME
+    )
+
+    print("Endpoint deleted ✅")
+    print("Cost saving: ~$33/month ✅")
+
+    # ─────────────────────────
+    # Step 7: Send report
+    # ─────────────────────────
+    activity_summary = {}
+    for p in predictions:
+        activity = p['predicted_activity']
+        activity_summary[activity] = \
+            activity_summary.get(activity, 0) + 1
+
+    fraud_count = sum(
+        1 for p in predictions
+        if p['anomaly_score'] >= 0.8
+    )
+
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject="Daily Predictions Complete ✅",
+        Message=f"""
+Daily ML Prediction Report:
+Date: {datetime.now().strftime('%Y-%m-%d')}
+
+Total users predicted: {len(predictions)}
+
+Activity Summary:
+{json.dumps(activity_summary, indent=2)}
+
+Fraud detected: {fraud_count} users
+
+Predictions saved to:
+s3://{OUTPUT_BUCKET}/{output_key}
+
+Cost optimization:
+Endpoint deleted after predictions ✅
+Saving ~$33/month ✅
+        """
+    )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'predictions_made': len(predictions),
+            'activity_summary': activity_summary,
+            'fraud_detected': fraud_count,
+            'endpoint_deleted': True,
+            'cost_saving': '$33/month'
+        })
+    }
