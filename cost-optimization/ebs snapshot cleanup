@@ -1,0 +1,166 @@
+# lambda_ebs_cleanup.py
+import boto3
+import json
+import os
+from datetime import datetime
+
+def lambda_handler(event, context):
+    
+    ec2 = boto3.client('ec2', region_name='us-east-2')
+    sns = boto3.client('sns', region_name='us-east-2')
+    
+    print("=" * 50)
+    print("EBS Snapshot Cleanup Starting...")
+    print("=" * 50)
+    
+    deleted_count = 0
+    skipped_count = 0
+    deleted_snapshots = []
+
+    # ─────────────────────────
+    # Get ALL snapshots
+    # ─────────────────────────
+    response = ec2.describe_snapshots(
+        OwnerIds=['self']
+    )
+    
+    total = len(response['Snapshots'])
+    print(f"Total snapshots found: {total}")
+
+    # ─────────────────────────
+    # Get running instances
+    # ─────────────────────────
+    instances = ec2.describe_instances(
+        Filters=[{
+            'Name': 'instance-state-name',
+            'Values': ['running']
+        }]
+    )
+    
+    active_instance_ids = set()
+    for reservation in instances['Reservations']:
+        for instance in reservation['Instances']:
+            active_instance_ids.add(
+                instance['InstanceId']
+            )
+    
+    print(f"Active instances: {len(active_instance_ids)}")
+
+    # ─────────────────────────
+    # Check each snapshot
+    # ─────────────────────────
+    for snapshot in response['Snapshots']:
+        
+        snapshot_id = snapshot['SnapshotId']
+        volume_id = snapshot.get('VolumeId')
+        size_gb = snapshot.get('VolumeSize', 0)
+
+        # Case 1: No volume ID
+        if not volume_id:
+            ec2.delete_snapshot(
+                SnapshotId=snapshot_id
+            )
+            deleted_count += 1
+            deleted_snapshots.append({
+                'id': snapshot_id,
+                'reason': 'No volume attached',
+                'size_gb': size_gb
+            })
+            print(f"Deleted {snapshot_id} - No volume")
+
+        else:
+            try:
+                # Case 2: Volume exists
+                volume_response = ec2.describe_volumes(
+                    VolumeIds=[volume_id]
+                )
+                attachments = volume_response[
+                    'Volumes'
+                ][0]['Attachments']
+
+                if not attachments:
+                    # Volume not attached to EC2
+                    ec2.delete_snapshot(
+                        SnapshotId=snapshot_id
+                    )
+                    deleted_count += 1
+                    deleted_snapshots.append({
+                        'id': snapshot_id,
+                        'reason': 'Volume not attached',
+                        'size_gb': size_gb
+                    })
+                    print(
+                        f"Deleted {snapshot_id}"
+                        f" - Volume not attached"
+                    )
+                else:
+                    skipped_count += 1
+                    print(
+                        f"Kept {snapshot_id}"
+                        f" - In use ✅"
+                    )
+
+            except ec2.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == \
+                   'InvalidVolume.NotFound':
+                    # Case 3: Volume deleted
+                    ec2.delete_snapshot(
+                        SnapshotId=snapshot_id
+                    )
+                    deleted_count += 1
+                    deleted_snapshots.append({
+                        'id': snapshot_id,
+                        'reason': 'Volume deleted',
+                        'size_gb': size_gb
+                    })
+                    print(
+                        f"Deleted {snapshot_id}"
+                        f" - Volume not found"
+                    )
+
+    # ─────────────────────────
+    # Calculate savings
+    # ─────────────────────────
+    total_gb_freed = sum(
+        s['size_gb'] for s in deleted_snapshots
+    )
+    monthly_savings = total_gb_freed * 0.05
+    # $0.05 per GB per month
+
+    print("=" * 50)
+    print(f"Deleted: {deleted_count} snapshots")
+    print(f"Kept: {skipped_count} snapshots")
+    print(f"Storage freed: {total_gb_freed} GB")
+    print(f"Monthly savings: ${monthly_savings:.2f}")
+    print("=" * 50)
+
+    # ─────────────────────────
+    # Send SNS report
+    # ─────────────────────────
+    if deleted_count > 0:
+        sns.publish(
+            TopicArn=os.environ['SNS_TOPIC_ARN'],
+            Subject="EBS Cleanup Complete ✅",
+            Message=f"""
+EBS Snapshot Cleanup Report:
+Date: {datetime.now().strftime('%Y-%m-%d')}
+
+Deleted: {deleted_count} snapshots
+Kept: {skipped_count} snapshots
+Storage freed: {total_gb_freed} GB
+Monthly savings: ${monthly_savings:.2f}
+
+Deleted snapshots:
+{json.dumps(deleted_snapshots, indent=2)}
+            """
+        )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'deleted': deleted_count,
+            'skipped': skipped_count,
+            'gb_freed': total_gb_freed,
+            'monthly_savings': monthly_savings
+        })
+    }
