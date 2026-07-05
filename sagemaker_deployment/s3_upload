@@ -1,0 +1,59 @@
+from sklearn.model_selection import train_test_split
+import numpy as np
+
+# Split 80% train 20% test
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42
+)
+
+print(f"Train size: {len(X_train)}")
+print(f"Test size: {len(X_test)}")
+
+# SageMaker XGBoost needs:
+# label as FIRST column
+# then features
+
+train_data = pd.concat(
+    [y_train.reset_index(drop=True),
+     X_train.reset_index(drop=True)],
+    axis=1
+)
+
+test_data = pd.concat(
+    [y_test.reset_index(drop=True),
+     X_test.reset_index(drop=True)],
+    axis=1
+)
+
+# Save to S3
+train_buffer = io.StringIO()
+train_data.to_csv(
+    train_buffer,
+    index=False,
+    header=False
+)
+
+s3.put_object(
+    Bucket='fitbit.gold.6006',
+    Key='training/train.csv',
+    Body=train_buffer.getvalue()
+)
+
+test_buffer = io.StringIO()
+test_data.to_csv(
+    test_buffer,
+    index=False,
+    header=False
+)
+
+s3.put_object(
+    Bucket='fitbit.gold.6006',
+    Key='training/test.csv',
+    Body=test_buffer.getvalue()
+)
+
+print("Training data uploaded to S3 ✅")
+print("s3://fitbit.gold.6006/training/train.csv")
+print("s3://fitbit.gold.6006/training/test.csv")
