@@ -1,0 +1,146 @@
+# lambda_sagemaker_predict.py
+# Triggered by S3 Gold event
+
+import boto3
+import json
+import os
+import io
+import pandas as pd
+from datetime import datetime
+
+ENDPOINT_NAME = 'fitbit-xgboost-endpoint'
+OUTPUT_BUCKET = 'fitbit.gold.6006'
+
+LABEL_MAP = {
+    0.0: "HIGH",
+    1.0: "MEDIUM",
+    2.0: "LOW",
+    3.0: "SEDENTARY"
+}
+
+FEATURE_COLUMNS = [
+    "total_steps",
+    "total_calories",
+    "active_minutes",
+    "sleep_minutes",
+    "avg_intensity",
+    "max_steps_in_minute"
+]
+
+def lambda_handler(event, context):
+
+    sagemaker_runtime = boto3.client(
+        'sagemaker-runtime',
+        region_name='us-east-2'
+    )
+    sagemaker_mgmt = boto3.client(
+        'sagemaker',
+        region_name='us-east-2'
+    )
+    s3 = boto3.client(
+        's3',
+        region_name='us-east-2'
+    )
+
+    # ─────────────────────────
+    # Read Gold file
+    # ─────────────────────────
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = event['Records'][0]['s3']['object']['key']
+
+    s3_obj = s3.get_object(Bucket=bucket, Key=key)
+    buffer = io.BytesIO(s3_obj['Body'].read())
+    df = pd.read_parquet(buffer)
+
+    print(f"Users to predict: {len(df)}")
+
+    # ─────────────────────────
+    # Create endpoint if needed
+    # ─────────────────────────
+    try:
+        sagemaker_mgmt.describe_endpoint(
+            EndpointName=ENDPOINT_NAME
+        )
+        print("Endpoint exists ✅")
+
+    except:
+        print("Creating endpoint...")
+        sagemaker_mgmt.create_endpoint(
+            EndpointName=ENDPOINT_NAME,
+            EndpointConfigName='fitbit-xgboost-config'
+        )
+        waiter = sagemaker_mgmt.get_waiter(
+            'endpoint_in_service'
+        )
+        waiter.wait(EndpointName=ENDPOINT_NAME)
+        print("Endpoint ready ✅")
+
+    # ─────────────────────────
+    # Batch predict ALL rows
+    # ─────────────────────────
+    features_csv = df[FEATURE_COLUMNS] \
+        .fillna(0) \
+        .to_csv(index=False, header=False)
+
+    response = sagemaker_runtime.invoke_endpoint(
+        EndpointName=ENDPOINT_NAME,
+        ContentType='text/csv',
+        Body=features_csv
+    )
+
+    results = response['Body'] \
+        .read() \
+        .decode('utf-8') \
+        .strip() \
+        .split('\n')
+
+    # ─────────────────────────
+    # Map all predictions
+    # ─────────────────────────
+    predictions = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        prediction = float(results[i])
+        activity = LABEL_MAP.get(
+            round(prediction),
+            "UNKNOWN"
+        )
+        predictions.append({
+            'user_id': str(row['user_id']),
+            'date': f"{row['year']}-{row['month']}-{row['day']}",
+            'total_steps': int(row['total_steps']),
+            'predicted_activity': activity,
+            'anomaly_score': float(row['anomaly_score'])
+        })
+
+    # ─────────────────────────
+    # Save predictions to S3
+    # ─────────────────────────
+    s3.put_object(
+        Bucket=OUTPUT_BUCKET,
+        Key=f"predictions/{datetime.now().strftime('%Y-%m-%d')}.json",
+        Body=json.dumps({
+            'total': len(predictions),
+            'predictions': predictions
+        }),
+        ContentType='application/json'
+    )
+
+    print(f"✅ {len(predictions)} predictions saved")
+
+    # ─────────────────────────
+    # DELETE endpoint
+    # Cost optimization! ✅
+    # ─────────────────────────
+    sagemaker_mgmt.delete_endpoint(
+        EndpointName=ENDPOINT_NAME
+    )
+    print("Endpoint deleted ✅")
+    print("Saving $33/month ✅")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'predictions': len(predictions),
+            'endpoint_deleted': True
+        })
+    }
