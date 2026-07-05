@@ -1,0 +1,155 @@
+# lambda_s3_cleanup.py
+import boto3
+import json
+import os
+from datetime import datetime, timedelta
+
+def lambda_handler(event, context):
+
+    s3 = boto3.client('s3', region_name='us-east-2')
+    sns = boto3.client('sns', region_name='us-east-2')
+
+    print("=" * 50)
+    print("S3 Cleanup Starting...")
+    print("=" * 50)
+
+    # ─────────────────────────
+    # Cleanup Rules
+    # ─────────────────────────
+    cleanup_rules = [
+        {
+            'bucket': 'fitbit.bronze.6006',
+            'prefix': 'minute_data/',
+            'days': 90,
+            'reason': 'Bronze retention 90 days'
+        },
+        {
+            'bucket': 'fitbit.gold.6006',
+            'prefix': 'predictions/',
+            'days': 30,
+            'reason': 'Predictions retention 30 days'
+        },
+        {
+            'bucket': 'fitbit.gold.6006',
+            'prefix': 'cost-reports/',
+            'days': 365,
+            'reason': 'Cost reports retention 1 year'
+        },
+        {
+            'bucket': 'fitbit.silver.6006',
+            'prefix': 'minute_data/',
+            'days': 365,
+            'reason': 'Silver retention 1 year'
+        }
+    ]
+
+    total_deleted = 0
+    total_bytes_freed = 0
+    cleanup_report = []
+
+    # ─────────────────────────
+    # Process each rule
+    # ─────────────────────────
+    for rule in cleanup_rules:
+
+        bucket = rule['bucket']
+        prefix = rule['prefix']
+        max_days = rule['days']
+        deleted = 0
+        bytes_freed = 0
+
+        print(f"\nChecking {bucket}/{prefix}")
+        print(f"Rule: Delete after {max_days} days")
+
+        # List all objects
+        paginator = s3.get_paginator(
+            'list_objects_v2'
+        )
+        pages = paginator.paginate(
+            Bucket=bucket,
+            Prefix=prefix
+        )
+
+        for page in pages:
+            for obj in page.get('Contents', []):
+
+                key = obj['Key']
+                size = obj['Size']
+                last_modified = obj['LastModified']
+
+                # Calculate age
+                age_days = (
+                    datetime.now() -
+                    last_modified.replace(tzinfo=None)
+                ).days
+
+                # Delete if too old
+                if age_days > max_days:
+                    s3.delete_object(
+                        Bucket=bucket,
+                        Key=key
+                    )
+                    deleted += 1
+                    bytes_freed += size
+                    print(
+                        f"Deleted: {key}"
+                        f" (age: {age_days} days)"
+                    )
+
+        total_deleted += deleted
+        total_bytes_freed += bytes_freed
+
+        cleanup_report.append({
+            'bucket': bucket,
+            'prefix': prefix,
+            'deleted_files': deleted,
+            'bytes_freed': bytes_freed,
+            'mb_freed': round(bytes_freed/1024/1024, 2)
+        })
+
+        print(f"Deleted {deleted} files")
+        print(
+            f"Freed {bytes_freed/1024/1024:.2f} MB"
+        )
+
+    # ─────────────────────────
+    # Calculate savings
+    # ─────────────────────────
+    gb_freed = total_bytes_freed / 1024 / 1024 / 1024
+    monthly_savings = gb_freed * 0.023
+    # S3 = $0.023 per GB per month
+
+    print("=" * 50)
+    print(f"Total deleted: {total_deleted} files")
+    print(f"Total freed: {gb_freed:.2f} GB")
+    print(f"Monthly savings: ${monthly_savings:.2f}")
+    print("=" * 50)
+
+    # ─────────────────────────
+    # Send SNS report
+    # ─────────────────────────
+    if total_deleted > 0:
+        sns.publish(
+            TopicArn=os.environ['SNS_TOPIC_ARN'],
+            Subject="S3 Cleanup Complete ✅",
+            Message=f"""
+S3 Cleanup Report:
+Date: {datetime.now().strftime('%Y-%m-%d')}
+
+Total files deleted: {total_deleted}
+Total storage freed: {gb_freed:.2f} GB
+Monthly savings: ${monthly_savings:.2f}
+
+Details:
+{json.dumps(cleanup_report, indent=2)}
+            """
+        )
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps({
+            'total_deleted': total_deleted,
+            'gb_freed': round(gb_freed, 2),
+            'monthly_savings': round(monthly_savings, 2)
+        })
+    }
